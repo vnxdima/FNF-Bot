@@ -1,0 +1,6 @@
+services:
+  fnf-chart-bot:
+    build: .
+    container_name: fnf-chart-bot
+    env_file: .env
+    restart: unless-stopped
