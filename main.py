@@ -8,6 +8,7 @@ v0.2: режим игры — сыграй свой чарт, тапая стр�
 import asyncio
 import logging
 import os
+import random
 import time
 from dataclasses import dataclass, field
 
@@ -149,6 +150,7 @@ def start_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
         rows.append(
             [InlineKeyboardButton(text="▶️ Играть последний чарт", callback_data="play")]
         )
+    rows.append([InlineKeyboardButton(text="🎮 Мини-игры", callback_data="games")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -307,22 +309,316 @@ def cancel_game(user_id: int) -> None:
         game.task.cancel()
 
 
-# ============================ Хендлеры ============================
+# ============================ Мини-игры ============================
 
 dp = Dispatcher()
+
+SIMON_START_LEN = 3     # стартовая длина последовательности
+SIMON_SHOW_BASE_S = 1.5  # базовое время показа + 0.4с за стрелку
+TA_ROUNDS = 6           # раундов тайм-атаки
+BATTLE_HP = 3
+# Цикл "камень-ножницы": ← бьёт ↓, ↓ бьёт ↑, ↑ бьёт →, → бьёт ←
+BEATS = {0: 1, 1: 2, 2: 3, 3: 0}
+BATTLE_RULE = "← бьёт ↓, ↓ бьёт ↑, ↑ бьёт →, → бьёт ←"
+
+
+@dataclass
+class MiniGame:
+    kind: str            # "simon" | "ta" | "battle"
+    chat_id: int
+    message_id: int
+    bot: Bot
+    # Саймон
+    seq: list[int] = field(default_factory=list)
+    input_pos: int = 0
+    round: int = 0
+    accepting: bool = False
+    # Тайм-атака
+    target: int = -1
+    shown_at: float = 0.0
+    rounds_left: int = 0
+    score: int = 0
+    reactions: list[int] = field(default_factory=list)
+    # Баттл
+    boss_hp: int = BATTLE_HP
+    player_hp: int = BATTLE_HP
+    task: asyncio.Task | None = None
+
+
+minigames: dict[int, MiniGame] = {}
+
+
+def stop_minigame(user_id: int) -> None:
+    mg = minigames.pop(user_id, None)
+    if mg and mg.task and not mg.task.done():
+        mg.task.cancel()
+
+
+async def mg_edit(mg: MiniGame, text: str, keyboard: InlineKeyboardMarkup | None) -> None:
+    try:
+        await mg.bot.edit_message_text(
+            text, chat_id=mg.chat_id, message_id=mg.message_id, reply_markup=keyboard,
+        )
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(e.retry_after)
+    except TelegramBadRequest:
+        pass
+
+
+def games_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🧠 Саймон говорит", callback_data="mg:simon")],
+            [InlineKeyboardButton(text="⚡ Тайм-атака", callback_data="mg:ta")],
+            [InlineKeyboardButton(text="🥊 Баттл с боссом", callback_data="mg:battle")],
+        ]
+    )
+
+
+def arrows_keyboard(prefix: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"{LANE_COLORS[lane]} {arrow}", callback_data=f"{prefix}:{lane}"
+                )
+                for lane, arrow in enumerate(LANE_ARROWS)
+            ],
+            [InlineKeyboardButton(text="⏹ Выйти", callback_data="mg_quit")],
+        ]
+    )
+
+
+def mg_over_keyboard(kind: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🔁 Ещё раз", callback_data=f"mg:{kind}"),
+                InlineKeyboardButton(text="🎮 Другие игры", callback_data="games"),
+            ]
+        ]
+    )
+
+
+@dp.callback_query(F.data == "games")
+async def cb_games(query: CallbackQuery) -> None:
+    stop_minigame(query.from_user.id)
+    await query.message.answer("🎮 Выбирай игру:", reply_markup=games_menu_keyboard())
+    await query.answer()
+
+
+@dp.callback_query(F.data == "mg_quit")
+async def cb_mg_quit(query: CallbackQuery) -> None:
+    stop_minigame(query.from_user.id)
+    await query.message.edit_text("🎮 Выбирай игру:", reply_markup=games_menu_keyboard())
+    await query.answer()
+
+
+async def start_minigame(query: CallbackQuery, kind: str) -> MiniGame:
+    user_id = query.from_user.id
+    stop_minigame(user_id)
+    sent = await query.bot.send_message(query.message.chat.id, "…")
+    mg = MiniGame(
+        kind=kind, chat_id=query.message.chat.id, message_id=sent.message_id,
+        bot=query.bot,
+    )
+    minigames[user_id] = mg
+    return mg
+
+
+# --- Саймон говорит ---
+
+async def simon_show_round(mg: MiniGame) -> None:
+    mg.accepting = False
+    mg.input_pos = 0
+    shown = "  ".join(LANE_ARROWS[i] for i in mg.seq)
+    await mg_edit(
+        mg,
+        f"🧠 Раунд {mg.round + 1}\n\nЗапоминай:\n\n<b>{shown}</b>",
+        None,
+    )
+    await asyncio.sleep(SIMON_SHOW_BASE_S + 0.4 * len(mg.seq))
+    mg.accepting = True
+    await mg_edit(
+        mg,
+        f"🧠 Раунд {mg.round + 1}\n\nПовтори последовательность "
+        f"({len(mg.seq)} стрелки):",
+        arrows_keyboard("sim"),
+    )
+
+
+@dp.callback_query(F.data == "mg:simon")
+async def cb_mg_simon(query: CallbackQuery) -> None:
+    mg = await start_minigame(query, "simon")
+    mg.seq = [random.randrange(LANES) for _ in range(SIMON_START_LEN)]
+    mg.task = asyncio.create_task(simon_show_round(mg))
+    await query.answer()
+
+
+@dp.callback_query(F.data.startswith("sim:"))
+async def cb_simon_hit(query: CallbackQuery) -> None:
+    mg = minigames.get(query.from_user.id)
+    if mg is None or mg.kind != "simon" or not mg.accepting:
+        await query.answer()
+        return
+    lane = int(query.data.split(":")[1])
+    if lane != mg.seq[mg.input_pos]:
+        stop_minigame(query.from_user.id)
+        shown = "  ".join(LANE_ARROWS[i] for i in mg.seq)
+        await mg_edit(
+            mg,
+            f"💥 Мимо! Было: <b>{shown}</b>\n\n"
+            f"Пройдено раундов: {mg.round}",
+            mg_over_keyboard("simon"),
+        )
+        await query.answer("💥")
+        return
+    mg.input_pos += 1
+    if mg.input_pos == len(mg.seq):
+        mg.round += 1
+        mg.seq.append(random.randrange(LANES))
+        mg.task = asyncio.create_task(simon_show_round(mg))
+        await query.answer(f"✅ Раунд {mg.round} пройден!")
+    else:
+        await query.answer("✔")
+
+
+# --- Тайм-атака ---
+
+async def ta_next(mg: MiniGame) -> None:
+    mg.target = -1
+    await mg_edit(
+        mg,
+        f"⚡ Раунд {TA_ROUNDS - mg.rounds_left + 1}/{TA_ROUNDS}   Очки: {mg.score}\n\n"
+        f"⏳ Жди стрелку…",
+        arrows_keyboard("ta"),
+    )
+    await asyncio.sleep(random.uniform(1.2, 3.0))
+    mg.target = random.randrange(LANES)
+    mg.shown_at = time.monotonic()
+    await mg_edit(
+        mg,
+        f"⚡ ЖМИ:   <b>{LANE_COLORS[mg.target]} {LANE_ARROWS[mg.target]}</b>",
+        arrows_keyboard("ta"),
+    )
+
+
+async def ta_finish(user_id: int, mg: MiniGame) -> None:
+    stop_minigame(user_id)
+    avg = sum(mg.reactions) // len(mg.reactions) if mg.reactions else 0
+    await mg_edit(
+        mg,
+        f"🏁 Тайм-атака окончена!\n\n"
+        f"Очки: {mg.score}\n"
+        f"Средняя реакция: {avg} мс\n"
+        f"Попаданий: {len(mg.reactions)}/{TA_ROUNDS}",
+        mg_over_keyboard("ta"),
+    )
+
+
+@dp.callback_query(F.data == "mg:ta")
+async def cb_mg_ta(query: CallbackQuery) -> None:
+    mg = await start_minigame(query, "ta")
+    mg.rounds_left = TA_ROUNDS
+    mg.task = asyncio.create_task(ta_next(mg))
+    await query.answer()
+
+
+@dp.callback_query(F.data.startswith("ta:"))
+async def cb_ta_hit(query: CallbackQuery) -> None:
+    user_id = query.from_user.id
+    mg = minigames.get(user_id)
+    if mg is None or mg.kind != "ta":
+        await query.answer()
+        return
+    lane = int(query.data.split(":")[1])
+    if mg.target < 0:
+        await query.answer("⏳ Фальстарт! Жди стрелку")
+        return
+    mg.rounds_left -= 1
+    if lane == mg.target:
+        delta = int((time.monotonic() - mg.shown_at) * 1000)
+        pts = max(1, (3000 - delta) // 100)
+        mg.score += pts
+        mg.reactions.append(delta)
+        await query.answer(f"⚡ {delta} мс → +{pts}")
+    else:
+        await query.answer("💨 не та стрелка")
+    if mg.rounds_left <= 0:
+        await ta_finish(user_id, mg)
+    else:
+        mg.task = asyncio.create_task(ta_next(mg))
+
+
+# --- Баттл с боссом ---
+
+def battle_text(mg: MiniGame, log: str = "") -> str:
+    return (
+        f"🥊 Баттл с Daddy Dearest\n\n"
+        f"Ты: {'💙' * mg.player_hp}{'🖤' * (BATTLE_HP - mg.player_hp)}   "
+        f"Босс: {'💜' * mg.boss_hp}{'🖤' * (BATTLE_HP - mg.boss_hp)}\n\n"
+        f"{log}\n"
+        f"Правило: {BATTLE_RULE}\n\n"
+        f"Твой ход:"
+    )
+
+
+@dp.callback_query(F.data == "mg:battle")
+async def cb_mg_battle(query: CallbackQuery) -> None:
+    mg = await start_minigame(query, "battle")
+    await mg_edit(mg, battle_text(mg, "Босс готовит атаку…"), arrows_keyboard("bat"))
+    await query.answer()
+
+
+@dp.callback_query(F.data.startswith("bat:"))
+async def cb_battle_hit(query: CallbackQuery) -> None:
+    user_id = query.from_user.id
+    mg = minigames.get(user_id)
+    if mg is None or mg.kind != "battle":
+        await query.answer()
+        return
+    player = int(query.data.split(":")[1])
+    boss = random.randrange(LANES)
+    p, b = LANE_ARROWS[player], LANE_ARROWS[boss]
+    if player == boss:
+        log = f"Ты {p} vs босс {b} — ничья! 🤝"
+        await query.answer("🤝 Ничья")
+    elif BEATS[player] == boss:
+        mg.boss_hp -= 1
+        log = f"Ты {p} vs босс {b} — твой удар прошёл! 💥"
+        await query.answer("💥 Попадание!")
+    else:
+        mg.player_hp -= 1
+        log = f"Ты {p} vs босс {b} — босс уколол тебя! 🩸"
+        await query.answer("🩸 Пропустил удар")
+    if mg.boss_hp <= 0 or mg.player_hp <= 0:
+        won = mg.boss_hp <= 0
+        stop_minigame(user_id)
+        await mg_edit(
+            mg,
+            f"{'🏆 Победа! Daddy Dearest повержен!' if won else '💀 Поражение… Босс оказался сильнее.'}\n\n"
+            f"{log}",
+            mg_over_keyboard("battle"),
+        )
+        return
+    await mg_edit(mg, battle_text(mg, log), arrows_keyboard("bat"))
+
+
+# ============================ Хендлеры ============================
 
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message) -> None:
     await message.answer(
-        "Привет! Это редактор чартов FNF.\n"
-        "Создай чарт — а потом сыграй в него!",
+        "Привет! Это FNF-бот: редактор чартов и мини-игры.\n"
+        "Создай чарт, сыграй в него — или зацени мини-игры 🎮",
         reply_markup=start_keyboard(message.from_user.id),
     )
 
 
 async def open_editor(bot: Bot, chat_id: int, user_id: int) -> None:
     cancel_game(user_id)
+    stop_minigame(user_id)
     session = Session()
     sessions[user_id] = session
     sent = await bot.send_message(
