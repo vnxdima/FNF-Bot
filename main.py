@@ -32,12 +32,12 @@ STEP_MS = 250          # длительность одной строки в ч�
 WINDOW_ROWS = 15       # окно показа поля в редакторе
 
 # --- Параметры режима игры ---
-PLAY_STEP_MS = 750     # темп воспроизведения: одна строка = 750 мс
-LEAD_MS = 1500         # пауза после "GO!" до первой строки
+PLAY_STEP_MS = 1000    # темп: строка = 1 c — максимум стабильной частоты editMessageText
+LEAD_MS = 2000         # пауза после "GO!" до первой строки
 PERFECT_MS = 300       # окно "идеально" (± мс)
 GOOD_MS = 700          # окно "хорошо" (± мс)
 PLAY_WINDOW = 10       # сколько строк показывать вперёд
-REDRAW_S = 1.5         # период перерисовки поля (лимиты Telegram)
+EMPTY_SLOT = "⚪"      # пустой приёмник на линии ловли
 
 
 @dataclass
@@ -206,9 +206,14 @@ def render_play(game: Game, elapsed_ms: float) -> str:
         if not n.hit:
             row_notes.setdefault(n.row, set()).add(n.lane)
 
-    # Линия удара: цветные приёмники
-    lines = ["  " + "".join(LANE_COLORS), "  " + "".join("⬆️" for _ in range(LANES))]
-    for row in range(cur, cur + PLAY_WINDOW):
+    # Единственная линия ловли: пустые приёмники ⚪, доехавшая нота
+    # загорается своим цветом прямо в этой строке.
+    hit_line = "".join(
+        LANE_COLORS[l] if l in row_notes.get(cur, set()) else EMPTY_SLOT
+        for l in range(LANES)
+    )
+    lines = [f"▶{hit_line}◀ ЛОВИ"]
+    for row in range(cur + 1, cur + PLAY_WINDOW):
         if 0 <= row < game.chart.rows:
             lanes = row_notes.get(row, set())
             cells = "".join(
@@ -216,14 +221,13 @@ def render_play(game: Game, elapsed_ms: float) -> str:
             )
         else:
             cells = EMPTY_CELL * LANES
-        prefix = "▶" if row == cur else " "
-        lines.append(f"{prefix} {cells}")
+        lines.append(f" {cells}")
     missed = sum(
         1 for n in game.notes if not n.hit and elapsed_ms - n.t_ms > GOOD_MS
     )
     lines.append("─" * 14)
     lines.append(f"✨ {game.perfect}  ✅ {game.good}  ❌ {missed}")
-    lines.append("Нота доехала до своего цвета — жми кнопку этого цвета!")
+    lines.append("Цвет загорелся в линии ЛОВИ — жми кнопку этого цвета!")
     return "<pre>" + "\n".join(lines) + "</pre>"
 
 
@@ -279,12 +283,19 @@ async def run_game(user_id: int) -> None:
             await asyncio.sleep(1)
         game.start = time.monotonic()
         total_ms = LEAD_MS + game.chart.rows * PLAY_STEP_MS + GOOD_MS
+        row = -LEAD_MS // PLAY_STEP_MS  # стартуем до первой строки
         while True:
             elapsed = (time.monotonic() - game.start) * 1000
             if elapsed > total_ms:
                 break
             await safe_edit(game, render_play(game, elapsed), play_keyboard())
-            await asyncio.sleep(REDRAW_S)
+            # Спим ровно до момента следующей строки — кадр на каждый шаг,
+            # без рассинхрона перерисовки и темпа
+            row += 1
+            next_t = (LEAD_MS + row * PLAY_STEP_MS) / 1000
+            delay = next_t - (time.monotonic() - game.start)
+            if delay > 0:
+                await asyncio.sleep(delay)
         await finish_game(user_id)
     except asyncio.CancelledError:
         pass
