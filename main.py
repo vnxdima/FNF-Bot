@@ -32,8 +32,13 @@ EMPTY_CELL = "⚫"
 STEP_MS = 250          # длительность одной строки в чарте
 WINDOW_ROWS = 15       # окно показа поля в редакторе
 
-# --- Параметры режима игры ---
-PLAY_STEP_MS = 1000    # темп: строка = 1 c — максимум стабильной частоты editMessageText
+# --- Параметры режима игры: (строка_мс, лид_мс, идеально_мс, хорошо_мс) ---
+# 📱 телефон: пальцы на всех кнопках; 🖥 комп: курсор надо доводить мышкой
+PLAY_SPEEDS = {
+    "mobile": (1000, 2000, 300, 700),
+    "desktop": (1600, 2400, 500, 1100),
+}
+PLAY_STEP_MS = 1000    # темп по умолчанию (регрессия для старых вызовов)
 LEAD_MS = 2000         # пауза после "GO!" до первой строки
 PERFECT_MS = 300       # окно "идеально" (± мс)
 GOOD_MS = 700          # окно "хорошо" (± мс)
@@ -86,6 +91,10 @@ class Game:
     chat_id: int
     message_id: int
     bot: Bot
+    step_ms: int = PLAY_STEP_MS
+    lead_ms: int = LEAD_MS
+    perfect_ms: int = PERFECT_MS
+    good_ms: int = GOOD_MS
     start: float | None = None   # monotonic-время момента "GO!"
     perfect: int = 0
     good: int = 0
@@ -192,9 +201,9 @@ def play_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def build_notes(chart: Chart) -> list[PlayNote]:
+def build_notes(chart: Chart, step_ms: int = PLAY_STEP_MS, lead_ms: int = LEAD_MS) -> list[PlayNote]:
     notes = [
-        PlayNote(row=row, lane=lane, t_ms=LEAD_MS + row * PLAY_STEP_MS)
+        PlayNote(row=row, lane=lane, t_ms=lead_ms + row * step_ms)
         for row, lanes in sorted(chart.notes.items())
         for lane in sorted(lanes)
     ]
@@ -202,7 +211,7 @@ def build_notes(chart: Chart) -> list[PlayNote]:
 
 
 def render_play(game: Game, elapsed_ms: float) -> str:
-    cur = int((elapsed_ms - LEAD_MS) // PLAY_STEP_MS)
+    cur = int((elapsed_ms - game.lead_ms) // game.step_ms)
     row_notes: dict[int, set[int]] = {}
     for n in game.notes:
         if not n.hit:
@@ -225,7 +234,7 @@ def render_play(game: Game, elapsed_ms: float) -> str:
             cells = EMPTY_CELL * LANES
         lines.append(f" {cells}")
     missed = sum(
-        1 for n in game.notes if not n.hit and elapsed_ms - n.t_ms > GOOD_MS
+        1 for n in game.notes if not n.hit and elapsed_ms - n.t_ms > game.good_ms
     )
     lines.append("─" * 14)
     lines.append(f"✨ {game.perfect}  ✅ {game.good}  ❌ {missed}")
@@ -284,8 +293,8 @@ async def run_game(user_id: int) -> None:
             await safe_edit(game, f"<pre>▶️ Старт через {n}…</pre>", play_keyboard())
             await asyncio.sleep(1)
         game.start = time.monotonic()
-        total_ms = LEAD_MS + game.chart.rows * PLAY_STEP_MS + GOOD_MS
-        row = -LEAD_MS // PLAY_STEP_MS  # стартуем до первой строки
+        total_ms = game.lead_ms + game.chart.rows * game.step_ms + game.good_ms
+        row = -game.lead_ms // game.step_ms  # стартуем до первой строки
         while True:
             elapsed = (time.monotonic() - game.start) * 1000
             if elapsed > total_ms:
@@ -294,7 +303,7 @@ async def run_game(user_id: int) -> None:
             # Спим ровно до момента следующей строки — кадр на каждый шаг,
             # без рассинхрона перерисовки и темпа
             row += 1
-            next_t = (LEAD_MS + row * PLAY_STEP_MS) / 1000
+            next_t = (game.lead_ms + row * game.step_ms) / 1000
             delay = next_t - (time.monotonic() - game.start)
             if delay > 0:
                 await asyncio.sleep(delay)
@@ -726,17 +735,46 @@ async def cb_play(query: CallbackQuery) -> None:
     if chart.note_count() == 0:
         await query.answer("В чарте нет ни одной ноты — добавь их в редакторе", show_alert=True)
         return
+    await query.message.answer(
+        "На чём играешь?\n\n"
+        "📱 Телефон — быстрый темп (пальцы на кнопках)\n"
+        "🖥 Компьютер — спокойный темп (мышке нужно время)",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="📱 Телефон", callback_data="speed:mobile"),
+                    InlineKeyboardButton(text="🖥 Компьютер", callback_data="speed:desktop"),
+                ]
+            ]
+        ),
+    )
+    await query.answer()
+
+
+@dp.callback_query(F.data.startswith("speed:"))
+async def cb_speed(query: CallbackQuery) -> None:
+    user_id = query.from_user.id
+    chart = last_charts.get(user_id)
+    if chart is None or chart.note_count() == 0:
+        await query.answer("Сначала создай чарт 🎼", show_alert=True)
+        return
+    step_ms, lead_ms, perfect_ms, good_ms = PLAY_SPEEDS[query.data.split(":")[1]]
     cancel_game(user_id)
+    await query.message.delete()
     sent = await query.bot.send_message(
         query.message.chat.id, "<pre>▶️ Приготовься…</pre>",
         reply_markup=play_keyboard(),
     )
     game = Game(
         chart=chart,
-        notes=build_notes(chart),
+        notes=build_notes(chart, step_ms, lead_ms),
         chat_id=query.message.chat.id,
         message_id=sent.message_id,
         bot=query.bot,
+        step_ms=step_ms,
+        lead_ms=lead_ms,
+        perfect_ms=perfect_ms,
+        good_ms=good_ms,
     )
     games[user_id] = game
     game.task = asyncio.create_task(run_game(user_id))
@@ -755,7 +793,7 @@ async def cb_hit(query: CallbackQuery) -> None:
     for note in game.notes:
         if note.lane == lane and not note.hit:
             diff = abs(elapsed - note.t_ms)
-            if diff <= GOOD_MS and (best is None or diff < abs(elapsed - best.t_ms)):
+            if diff <= game.good_ms and (best is None or diff < abs(elapsed - best.t_ms)):
                 best = note
     if best is None:
         game.stray += 1
@@ -764,7 +802,7 @@ async def cb_hit(query: CallbackQuery) -> None:
     # Аккорд ловится одним тапом: засчитываем все ноты той же строки
     # (одновременные тапы по нескольким inline-кнопкам Telegram не поддерживает)
     chord = [n for n in game.notes if n.row == best.row and not n.hit]
-    perfect = abs(elapsed - best.t_ms) <= PERFECT_MS
+    perfect = abs(elapsed - best.t_ms) <= game.perfect_ms
     for note in chord:
         note.hit = True
     if perfect:
