@@ -25,6 +25,9 @@ from dotenv import load_dotenv
 
 LANES = 4
 LANE_ARROWS = ["←", "↓", "↑", "→"]
+# Цвета дорожек как в FNF: ← фиолетовый, ↓ синий, ↑ зелёный, → красный
+LANE_COLORS = ["🟣", "🔵", "🟢", "🔴"]
+EMPTY_CELL = "⚫"
 STEP_MS = 250          # длительность одной строки в чарте
 WINDOW_ROWS = 15       # окно показа поля в редакторе
 
@@ -177,7 +180,9 @@ def play_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text=arrow, callback_data=f"hit:{lane}")
+                InlineKeyboardButton(
+                    text=f"{LANE_COLORS[lane]} {arrow}", callback_data=f"hit:{lane}"
+                )
                 for lane, arrow in enumerate(LANE_ARROWS)
             ],
             [InlineKeyboardButton(text="⏹ Стоп", callback_data="play_stop")],
@@ -201,13 +206,16 @@ def render_play(game: Game, elapsed_ms: float) -> str:
         if not n.hit:
             row_notes.setdefault(n.row, set()).add(n.lane)
 
-    lines = ["  " + "  ".join(LANE_ARROWS)]
+    # Линия удара: цветные приёмники
+    lines = ["  " + "".join(LANE_COLORS), "  " + "".join("⬆️" for _ in range(LANES))]
     for row in range(cur, cur + PLAY_WINDOW):
         if 0 <= row < game.chart.rows:
             lanes = row_notes.get(row, set())
-            cells = "  ".join("*" if l in lanes else "·" for l in range(LANES))
+            cells = "".join(
+                LANE_COLORS[l] if l in lanes else EMPTY_CELL for l in range(LANES)
+            )
         else:
-            cells = "  ".join(" " for _ in range(LANES))
+            cells = EMPTY_CELL * LANES
         prefix = "▶" if row == cur else " "
         lines.append(f"{prefix} {cells}")
     missed = sum(
@@ -215,7 +223,7 @@ def render_play(game: Game, elapsed_ms: float) -> str:
     )
     lines.append("─" * 14)
     lines.append(f"✨ {game.perfect}  ✅ {game.good}  ❌ {missed}")
-    lines.append("Тапай стрелку, когда её нота на линии ▶")
+    lines.append("Нота доехала до своего цвета — жми кнопку этого цвета!")
     return "<pre>" + "\n".join(lines) + "</pre>"
 
 
@@ -445,14 +453,19 @@ async def cb_hit(query: CallbackQuery) -> None:
     if best is None:
         game.stray += 1
         await query.answer("💨 мимо")
-    elif abs(elapsed - best.t_ms) <= PERFECT_MS:
-        best.hit = True
-        game.perfect += 1
-        await query.answer("✨ идеально!")
+        return
+    # Аккорд ловится одним тапом: засчитываем все ноты той же строки
+    # (одновременные тапы по нескольким inline-кнопкам Telegram не поддерживает)
+    chord = [n for n in game.notes if n.row == best.row and not n.hit]
+    perfect = abs(elapsed - best.t_ms) <= PERFECT_MS
+    for note in chord:
+        note.hit = True
+    if perfect:
+        game.perfect += len(chord)
+        await query.answer(f"✨ идеально!{' x' + str(len(chord)) if len(chord) > 1 else ''}")
     else:
-        best.hit = True
-        game.good += 1
-        await query.answer("✅ хорошо")
+        game.good += len(chord)
+        await query.answer(f"✅ хорошо{' x' + str(len(chord)) if len(chord) > 1 else ''}")
 
 
 @dp.callback_query(F.data == "play_stop")
