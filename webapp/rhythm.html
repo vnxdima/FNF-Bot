@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Ритм — FNF Arcade</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root{ --ink:#0b0313; --lime:#31ff6b; --yellow:#ffe14d; --fuchsia:#ff3ea5 }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent; user-select:none}
+  html,body{margin:0; height:100%; overflow:hidden; background:#12071f;
+    font-family:"Trebuchet MS",system-ui,sans-serif; color:#fff; touch-action:manipulation}
+  #wrap{position:relative; width:100%; height:100%}
+  canvas{display:block; width:100%; height:100%}
+  .overlay{
+    position:absolute; inset:0; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; gap:18px; text-align:center; padding:24px;
+    background:rgba(11,3,19,.86); backdrop-filter:blur(3px); z-index:2;
+  }
+  .overlay.hidden{display:none}
+  .title{font-size:clamp(30px,9vw,46px); font-weight:900; text-transform:uppercase;
+    letter-spacing:2px; color:var(--yellow); transform:rotate(-2deg);
+    text-shadow:-3px -3px 0 var(--ink),3px -3px 0 var(--ink),-3px 3px 0 var(--ink),
+                3px 3px 0 var(--ink),0 9px 0 var(--fuchsia)}
+  .hint{font-size:15px; color:#cbb6e8; line-height:1.6; max-width:340px}
+  .btn{
+    font:900 20px/1 "Trebuchet MS",sans-serif; letter-spacing:1px; text-transform:uppercase;
+    padding:16px 34px; border:4px solid var(--ink); border-radius:16px; cursor:pointer;
+    background:var(--lime); color:var(--ink); box-shadow:0 7px 0 var(--ink);
+  }
+  .btn:active{transform:translateY(4px); box-shadow:0 3px 0 var(--ink)}
+  .btn.ghost{background:#2a1147; color:#fff}
+  .stats{font-size:17px; color:#fff; line-height:2}
+  .stats b{color:var(--lime)}
+  .rank{font-size:64px; font-weight:900; text-shadow:0 6px 0 var(--ink)}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+
+  <div class="overlay" id="startScreen">
+    <div class="title">Лови ноты</div>
+    <p class="hint" id="startHint">Стрелки летят вниз к светящейся линии.<br>Жми в момент касания!</p>
+    <button class="btn" id="startBtn">Поехали</button>
+  </div>
+
+  <div class="overlay hidden" id="endScreen">
+    <div class="rank" id="rank">S</div>
+    <div class="stats" id="stats"></div>
+    <button class="btn" id="againBtn">Ещё раз</button>
+    <button class="btn ghost" id="backBtn">К играм</button>
+  </div>
+</div>
+
+<script>
+const tg = window.Telegram?.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+const LANES = 4;
+const COLORS = ['#c24bff', '#22e0ff', '#31ff6b', '#ff3546']; // ← ↓ ↑ →
+const GLYPH  = ['←', '↓', '↑', '→'];
+const KEYS   = { KeyA:0, KeyS:1, KeyW:2, KeyD:3,
+                 ArrowLeft:0, ArrowDown:1, ArrowUp:2, ArrowRight:3 };
+const FALL_MS = 2000;      // сколько нота летит от верха до линии
+const PERFECT = 90, GOOD = 180;   // окна попадания, мс (реальные — задержки нет)
+const STEP_MS = 500;       // шаг между строками чарта по умолчанию
+const LEAD_MS = 2500;      // пауза перед первой нотой
+
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+// Игровое поле — узкая центральная колонка, чтобы все дорожки
+// были в одном фокусе взгляда даже на широком экране
+let FIELD_W = 0, FIELD_X = 0;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = cv.clientWidth; H = cv.clientHeight;
+  cv.width = W * DPR; cv.height = H * DPR;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  FIELD_W = Math.min(W, 480);
+  FIELD_X = (W - FIELD_W) / 2;
+}
+window.addEventListener('resize', resize);
+
+// ---------- чарт ----------
+function defaultChart() {
+  // Демо-паттерн, если бот не передал свой чарт
+  const rows = [[0],[2],[1],[3],[0,2],[1],[3],[2],[0],[1,3],[2],[0],[3],[1],[0,2],[3]];
+  const notes = [];
+  rows.forEach((lanes, r) => lanes.forEach(l => notes.push({ row:r, lane:l })));
+  return { notes, stepMs: STEP_MS };
+}
+function parseChart() {
+  // Формат из бота: #c=0.2,1.0,2.3  (строка.дорожка через запятую)
+  const raw = new URLSearchParams(location.hash.slice(1)).get('c');
+  if (!raw) return defaultChart();
+  const notes = raw.split(',').map(s => {
+    const [row, lane] = s.split('.').map(Number);
+    return { row, lane };
+  }).filter(n => Number.isFinite(n.row) && n.lane >= 0 && n.lane < LANES);
+  return notes.length ? { notes, stepMs: STEP_MS } : defaultChart();
+}
+
+// ---------- состояние ----------
+let notes = [], t0 = 0, running = false, raf = 0;
+let perfect = 0, good = 0, missed = 0, combo = 0, maxCombo = 0;
+let flash = [0,0,0,0];      // подсветка приёмника при нажатии
+let pops = [];              // всплывающие надписи
+const lanePress = [false,false,false,false];
+
+function buildNotes() {
+  const chart = parseChart();
+  notes = chart.notes
+    .map(n => ({ ...n, t: LEAD_MS + n.row * chart.stepMs, hit:false, judged:false }))
+    .sort((a,b) => a.t - b.t);
+}
+
+function start() {
+  buildNotes();
+  perfect = good = missed = combo = maxCombo = 0;
+  pops = [];
+  document.getElementById('startScreen').classList.add('hidden');
+  document.getElementById('endScreen').classList.add('hidden');
+  running = true;
+  t0 = performance.now();
+  cancelAnimationFrame(raf);
+  loop();
+}
+
+function judge(lane) {
+  if (!running) return;
+  const now = performance.now() - t0;
+  flash[lane] = 1;
+  let best = null, bestDiff = 1e9;
+  for (const n of notes) {
+    if (n.lane !== lane || n.judged) continue;
+    const d = Math.abs(n.t - now);
+    if (d < bestDiff) { bestDiff = d; best = n; }
+  }
+  if (!best || bestDiff > GOOD) { combo = 0; addPop(lane, 'мимо', '#ff6b8a'); return; }
+  best.judged = best.hit = true;
+  if (bestDiff <= PERFECT) { perfect++; addPop(lane, 'ИДЕАЛЬНО', '#31ff6b'); }
+  else { good++; addPop(lane, 'хорошо', '#ffe14d'); }
+  combo++; maxCombo = Math.max(maxCombo, combo);
+  if (tg?.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+}
+
+function addPop(lane, text, color) {
+  pops.push({ lane, text, color, born: performance.now() });
+}
+
+// ---------- ввод ----------
+addEventListener('keydown', e => {
+  if (e.repeat) return;
+  if (e.code === 'Space' && !running) { start(); return; }
+  const lane = KEYS[e.code];
+  if (lane !== undefined) { lanePress[lane] = true; judge(lane); e.preventDefault(); }
+});
+addEventListener('keyup', e => {
+  const lane = KEYS[e.code];
+  if (lane !== undefined) lanePress[lane] = false;
+});
+function pointerLane(x) {
+  const rel = (x - FIELD_X) / (FIELD_W / LANES);
+  return Math.min(LANES - 1, Math.max(0, Math.floor(rel)));
+}
+cv.addEventListener('pointerdown', e => {
+  if (!running) return;
+  const lane = pointerLane(e.clientX);
+  lanePress[lane] = true; judge(lane);
+});
+cv.addEventListener('pointerup', e => { lanePress[pointerLane(e.clientX)] = false; });
+cv.addEventListener('pointercancel', () => lanePress.fill(false));
+
+// ---------- отрисовка ----------
+function drawArrow(x, y, size, lane, alpha, filled) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.globalAlpha = alpha;
+  ctx.rotate(({0:Math.PI/2, 1:0, 2:Math.PI, 3:-Math.PI/2})[lane]);
+  const s = size / 2;
+  ctx.beginPath();                 // стрелка вниз, поворачивается по дорожке
+  ctx.moveTo(0, s);
+  ctx.lineTo(s, 0);
+  ctx.lineTo(s * .45, 0);
+  ctx.lineTo(s * .45, -s);
+  ctx.lineTo(-s * .45, -s);
+  ctx.lineTo(-s * .45, 0);
+  ctx.lineTo(-s, 0);
+  ctx.closePath();
+  if (filled) {
+    ctx.fillStyle = COLORS[lane];
+    ctx.shadowColor = COLORS[lane]; ctx.shadowBlur = 18;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+  ctx.lineWidth = 4; ctx.strokeStyle = '#0b0313'; ctx.stroke();
+  ctx.restore();
+}
+
+function loop() {
+  raf = requestAnimationFrame(loop);
+  const now = performance.now() - t0;
+  const laneW = FIELD_W / LANES;
+  const hitY = H - Math.max(110, H * 0.17);
+  const size = Math.min(laneW * 0.62, 92);
+
+  // фон
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#2a0f47'); g.addColorStop(1, '#12071f');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+  // затемняем всё вне игрового поля, чтобы взгляд держался в колонке
+  if (FIELD_X > 0) {
+    ctx.fillStyle = 'rgba(0,0,0,.45)';
+    ctx.fillRect(0, 0, FIELD_X, H);
+    ctx.fillRect(FIELD_X + FIELD_W, 0, FIELD_X, H);
+  }
+
+  // дорожки
+  for (let l = 0; l < LANES; l++) {
+    ctx.fillStyle = l % 2 ? 'rgba(255,255,255,.045)' : 'rgba(255,255,255,.02)';
+    ctx.fillRect(FIELD_X + l * laneW, 0, laneW, H);
+  }
+  // границы поля
+  ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(FIELD_X, 0); ctx.lineTo(FIELD_X, H);
+  ctx.moveTo(FIELD_X + FIELD_W, 0); ctx.lineTo(FIELD_X + FIELD_W, H);
+  ctx.stroke();
+
+  // линия попадания
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,.22)'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(FIELD_X, hitY); ctx.lineTo(FIELD_X + FIELD_W, hitY); ctx.stroke();
+  ctx.restore();
+
+  // приёмники
+  for (let l = 0; l < LANES; l++) {
+    const cx = FIELD_X + l * laneW + laneW / 2;
+    const active = flash[l] > 0 || lanePress[l];
+    ctx.save();
+    if (active) { ctx.shadowColor = COLORS[l]; ctx.shadowBlur = 26; }
+    drawArrow(cx, hitY, size * (active ? 1.12 : 1), l, active ? 1 : .38, active);
+    ctx.restore();
+    flash[l] = Math.max(0, flash[l] - 0.08);
+  }
+
+  // ноты — позиция вычисляется из времени, поэтому движение непрерывное
+  for (const n of notes) {
+    if (n.hit) continue;
+    const dt = n.t - now;                 // мс до попадания
+    if (dt > FALL_MS || dt < -400) {
+      if (!n.judged && dt < -GOOD) { n.judged = true; missed++; combo = 0; }
+      continue;
+    }
+    const y = hitY - (dt / FALL_MS) * (hitY + size);
+    const cx = FIELD_X + n.lane * laneW + laneW / 2;
+    drawArrow(cx, y, size, n.lane, 1, true);
+  }
+
+  // всплывающие оценки
+  pops = pops.filter(p => now - (p.born - t0) < 700);
+  for (const p of pops) {
+    const age = (performance.now() - p.born) / 700;
+    ctx.save();
+    ctx.globalAlpha = 1 - age;
+    ctx.font = '900 22px "Trebuchet MS", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = p.color;
+    ctx.strokeStyle = '#0b0313'; ctx.lineWidth = 5;
+    const y = hitY - 60 - age * 42;
+    const x = FIELD_X + p.lane * laneW + laneW / 2;
+    ctx.strokeText(p.text, x, y); ctx.fillText(p.text, x, y);
+    ctx.restore();
+  }
+
+  // счёт и комбо
+  ctx.save();
+  ctx.font = '900 20px "Trebuchet MS", sans-serif';
+  ctx.textAlign = 'left'; ctx.fillStyle = '#fff';
+  ctx.strokeStyle = '#0b0313'; ctx.lineWidth = 5;
+  const line = `✨ ${perfect}   ✅ ${good}   ❌ ${missed}`;
+  ctx.strokeText(line, FIELD_X + 12, 34); ctx.fillText(line, FIELD_X + 12, 34);
+  if (combo > 1) {
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#ffe14d';
+    ctx.strokeText(`COMBO ${combo}`, FIELD_X + FIELD_W - 12, 34);
+    ctx.fillText(`COMBO ${combo}`, FIELD_X + FIELD_W - 12, 34);
+  }
+  ctx.restore();
+
+  // конец
+  const last = notes.length ? notes[notes.length - 1].t : 0;
+  if (running && now > last + 900) finish();
+}
+
+function finish() {
+  running = false;
+  cancelAnimationFrame(raf);
+  const total = notes.length;
+  const acc = total ? Math.round(100 * (perfect + 0.5 * good) / total) : 0;
+  const rank = acc >= 95 ? 'S' : acc >= 85 ? 'A' : acc >= 70 ? 'B' : acc >= 50 ? 'C' : 'D';
+  document.getElementById('rank').textContent = rank;
+  document.getElementById('rank').style.color =
+    ({S:'#31ff6b', A:'#22e0ff', B:'#ffe14d', C:'#ff9f43', D:'#ff6b8a'})[rank];
+  document.getElementById('stats').innerHTML =
+    `Точность: <b>${acc}%</b><br>✨ Идеально: ${perfect}<br>✅ Хорошо: ${good}<br>` +
+    `❌ Мимо: ${missed}<br>🔥 Макс. комбо: ${maxCombo}`;
+  document.getElementById('endScreen').classList.remove('hidden');
+  if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+}
+
+document.getElementById('startBtn').onclick = start;
+document.getElementById('againBtn').onclick = start;
+document.getElementById('backBtn').onclick = () => location.href = 'index.html';
+
+// подсказка под устройство
+if (matchMedia('(pointer: coarse)').matches) {
+  document.getElementById('startHint').innerHTML =
+    'Стрелки летят вниз к светящейся линии.<br>Тапай по своей дорожке в момент касания!';
+}
+
+resize();
+// статичный кадр до старта
+notes = []; t0 = performance.now(); loop(); running = false;
+</script>
+</body>
+</html>

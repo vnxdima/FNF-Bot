@@ -21,6 +21,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    WebAppInfo,
 )
 from dotenv import load_dotenv
 
@@ -31,6 +32,18 @@ LANE_COLORS = ["🟣", "🔵", "🟢", "🔴"]
 EMPTY_CELL = "⚫"
 STEP_MS = 250          # длительность одной строки в чарте
 WINDOW_ROWS = 15       # окно показа поля в редакторе
+
+WEBAPP_URL = os.getenv("WEBAPP_URL", "https://vnxdima.github.io/FNF-Bot/")
+
+
+def chart_to_hash(chart: "Chart") -> str:
+    """Чарт -> компактный параметр для Mini App: #c=строка.дорожка,…"""
+    pairs = [
+        f"{row}.{lane}"
+        for row, lanes in sorted(chart.notes.items())
+        for lane in sorted(lanes)
+    ]
+    return "#c=" + ",".join(pairs) if pairs else ""
 
 # --- Параметры режима игры: (строка_мс, лид_мс, идеально_мс, хорошо_мс) ---
 # 📱 телефон: пальцы на всех кнопках; 🖥 комп: курсор надо доводить мышкой
@@ -154,7 +167,13 @@ def editor_keyboard() -> InlineKeyboardMarkup:
 
 
 def start_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text="\U0001f3bc Новый чарт", callback_data="new")]]
+    rows = [
+        [InlineKeyboardButton(
+            text="🕹 FNF Arcade (плавные стрелки)",
+            web_app=WebAppInfo(url=WEBAPP_URL),
+        )],
+        [InlineKeyboardButton(text="\U0001f3bc Новый чарт", callback_data="new")],
+    ]
     if user_id is not None and user_id in last_charts:
         rows.append(
             [InlineKeyboardButton(text="▶️ Играть последний чарт", callback_data="play")]
@@ -163,15 +182,18 @@ def start_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def after_done_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="▶️ Играть", callback_data="play"),
-                InlineKeyboardButton(text="\U0001f3bc Новый чарт", callback_data="new"),
-            ]
-        ]
-    )
+def after_done_keyboard(chart: "Chart | None" = None) -> InlineKeyboardMarkup:
+    rows = []
+    if chart is not None and chart.note_count():
+        rows.append([InlineKeyboardButton(
+            text="🕹 Сыграть в Arcade (плавно)",
+            web_app=WebAppInfo(url=WEBAPP_URL + chart_to_hash(chart)),
+        )])
+    rows.append([
+        InlineKeyboardButton(text="▶️ Играть в боте", callback_data="play"),
+        InlineKeyboardButton(text="\U0001f3bc Новый чарт", callback_data="new"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def confirm_keyboard() -> InlineKeyboardMarkup:
@@ -282,7 +304,7 @@ async def finish_game(user_id: int, stopped: bool = False) -> None:
         f"❌ Мимо: {missed}\n"
         f"💨 Лишние тапы: {game.stray}\n\n"
         f"Точность: {acc}%\nРанг: {rank}",
-        after_done_keyboard(),
+        after_done_keyboard(game.chart),
     )
 
 
@@ -720,7 +742,7 @@ async def cb_done(query: CallbackQuery) -> None:
         f"Нот: {chart.note_count()}\n"
         f"Длительность: {format_time(chart.rows, chart.step_ms)}\n\n"
         f"А теперь — сыграй в него! ▶️",
-        reply_markup=after_done_keyboard(),
+        reply_markup=after_done_keyboard(chart),
     )
     await query.answer()
 
