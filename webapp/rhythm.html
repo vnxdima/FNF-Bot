@@ -6,49 +6,72 @@
 <title>Ритм — FNF Arcade</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-  :root{ --ink:#0b0313; --lime:#31ff6b; --yellow:#ffe14d; --fuchsia:#ff3ea5 }
+  :root{ --ink:#0b0313; --lime:#31ff6b; --yellow:#ffe14d; --fuchsia:#ff3ea5; --cyan:#22e0ff }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent; user-select:none}
   html,body{margin:0; height:100%; overflow:hidden; background:#12071f;
-    font-family:"Trebuchet MS",system-ui,sans-serif; color:#fff; touch-action:manipulation}
+    font-family:"Trebuchet MS",system-ui,sans-serif; color:#fff; touch-action:none}
   #wrap{position:relative; width:100%; height:100%}
   canvas{display:block; width:100%; height:100%}
   .overlay{
     position:absolute; inset:0; display:flex; flex-direction:column; align-items:center;
-    justify-content:center; gap:18px; text-align:center; padding:24px;
-    background:rgba(11,3,19,.86); backdrop-filter:blur(3px); z-index:2;
+    justify-content:center; gap:14px; text-align:center; padding:20px 16px;
+    background:rgba(11,3,19,.9); backdrop-filter:blur(3px); z-index:2; overflow-y:auto;
   }
   .overlay.hidden{display:none}
-  .title{font-size:clamp(30px,9vw,46px); font-weight:900; text-transform:uppercase;
-    letter-spacing:2px; color:var(--yellow); transform:rotate(-2deg);
+  .title{font-size:clamp(26px,8vw,40px); font-weight:900; text-transform:uppercase;
+    letter-spacing:2px; color:var(--yellow); transform:rotate(-2deg); margin:0;
     text-shadow:-3px -3px 0 var(--ink),3px -3px 0 var(--ink),-3px 3px 0 var(--ink),
                 3px 3px 0 var(--ink),0 9px 0 var(--fuchsia)}
-  .hint{font-size:15px; color:#cbb6e8; line-height:1.6; max-width:340px}
+  .hint{font-size:14px; color:#cbb6e8; line-height:1.6; max-width:360px; margin:0}
   .btn{
-    font:900 20px/1 "Trebuchet MS",sans-serif; letter-spacing:1px; text-transform:uppercase;
-    padding:16px 34px; border:4px solid var(--ink); border-radius:16px; cursor:pointer;
+    font:900 19px/1 "Trebuchet MS",sans-serif; letter-spacing:1px; text-transform:uppercase;
+    padding:15px 30px; border:4px solid var(--ink); border-radius:16px; cursor:pointer;
     background:var(--lime); color:var(--ink); box-shadow:0 7px 0 var(--ink);
   }
   .btn:active{transform:translateY(4px); box-shadow:0 3px 0 var(--ink)}
   .btn.ghost{background:#2a1147; color:#fff}
-  .stats{font-size:17px; color:#fff; line-height:2}
+  .songs{display:grid; gap:10px; width:100%; max-width:400px}
+  .song{
+    display:flex; align-items:center; gap:12px; text-align:left; cursor:pointer;
+    padding:12px 14px; border:4px solid var(--ink); border-radius:16px;
+    background:linear-gradient(160deg,#2f1250,#180a2b); box-shadow:0 6px 0 var(--ink);
+    color:#fff; font-family:inherit; font-size:15px;
+  }
+  .song:active{transform:translateY(4px); box-shadow:0 2px 0 var(--ink)}
+  .song .ico{font-size:28px; line-height:1}
+  .song .nm{font-weight:900; font-size:17px; letter-spacing:.4px}
+  .song .mt{font-size:12px; color:#c0a6e6; margin-top:3px}
+  .song[data-diff="1"] .nm{color:var(--lime)}
+  .song[data-diff="2"] .nm{color:var(--cyan)}
+  .song[data-diff="3"] .nm{color:var(--yellow)}
+  .song[data-diff="4"] .nm{color:var(--fuchsia)}
+  .stats{font-size:16px; color:#fff; line-height:1.9}
   .stats b{color:var(--lime)}
-  .rank{font-size:64px; font-weight:900; text-shadow:0 6px 0 var(--ink)}
+  .rank{font-size:60px; font-weight:900; text-shadow:0 6px 0 var(--ink); margin:0}
+  .rowbtn{display:flex; gap:10px; flex-wrap:wrap; justify-content:center}
 </style>
 </head>
 <body>
 <div id="wrap">
   <canvas id="c"></canvas>
 
-  <div class="overlay" id="startScreen">
-    <div class="title">Лови ноты</div>
-    <p class="hint" id="startHint">Стрелки летят вниз к светящейся линии.<br>Жми в момент касания!</p>
-    <button class="btn" id="startBtn">Поехали</button>
+  <div class="overlay" id="menuScreen">
+    <p class="title">Лови ноты</p>
+    <p class="hint" id="menuHint">
+      Короткие стрелки — жми в момент касания линии.<br>
+      <b style="color:#ffe14d">Длинные</b> — жми и <b style="color:#ffe14d">держи</b> до конца хвоста!
+    </p>
+    <div class="songs" id="songs"></div>
+    <p class="hint" style="opacity:.7">Клавиши A S W D или стрелки • на телефоне тапай и держи</p>
   </div>
 
   <div class="overlay hidden" id="endScreen">
-    <div class="rank" id="rank">S</div>
+    <p class="rank" id="rank">S</p>
     <div class="stats" id="stats"></div>
-    <button class="btn" id="againBtn">Ещё раз</button>
+    <div class="rowbtn">
+      <button class="btn" id="againBtn">Ещё раз</button>
+      <button class="btn ghost" id="menuBtn">Другой трек</button>
+    </div>
     <button class="btn ghost" id="backBtn">К играм</button>
   </div>
 </div>
@@ -59,13 +82,12 @@ if (tg) { tg.ready(); tg.expand(); }
 
 const LANES = 4;
 const COLORS = ['#c24bff', '#22e0ff', '#31ff6b', '#ff3546']; // ← ↓ ↑ →
-const GLYPH  = ['←', '↓', '↑', '→'];
 const KEYS   = { KeyA:0, KeyS:1, KeyW:2, KeyD:3,
                  ArrowLeft:0, ArrowDown:1, ArrowUp:2, ArrowRight:3 };
-const FALL_MS = 2000;      // сколько нота летит от верха до линии
+const FALL_MS = 2000;             // сколько нота летит от верха до линии
 const PERFECT = 90, GOOD = 180;   // окна попадания, мс (реальные — задержки нет)
-const STEP_MS = 500;       // шаг между строками чарта по умолчанию
-const LEAD_MS = 2500;      // пауза перед первой нотой
+const LEAD_MS = 2600;             // пауза перед первой нотой
+const HOLD_TAIL_GRACE = 120;      // на столько раньше конца хвост уже засчитан
 
 const cv = document.getElementById('c');
 const ctx = cv.getContext('2d');
@@ -79,49 +101,161 @@ function resize() {
   W = cv.clientWidth; H = cv.clientHeight;
   cv.width = W * DPR; cv.height = H * DPR;
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  FIELD_W = Math.min(W, 480);
+  FIELD_W = Math.min(W, 460);
   FIELD_X = (W - FIELD_W) / 2;
 }
 window.addEventListener('resize', resize);
 
-// ---------- чарт ----------
-function defaultChart() {
-  // Демо-паттерн, если бот не передал свой чарт
-  const rows = [[0],[2],[1],[3],[0,2],[1],[3],[2],[0],[1,3],[2],[0],[3],[1],[0,2],[3]];
+// ---------- генератор ритма ----------
+// Детерминированный ГПСЧ: одинаковый seed -> одинаковый трек,
+// у «Хаоса» seed новый каждый раз, поэтому ритм не повторяется.
+function rng(seed) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Собирает партию из ритмических фраз, а не из ровной сетки:
+ * каждая фраза (4 такта) выбирает свой рисунок — восьмые, шестнадцатые,
+ * синкопа, аккорд, длинная нота. Отсюда живой, непредсказуемый ритм.
+ */
+function generate(song) {
+  const rand = rng(song.seed);
+  const beat = 60000 / song.bpm;      // четверть
+  const step = beat / 2;              // восьмая — базовый шаг
   const notes = [];
-  rows.forEach((lanes, r) => lanes.forEach(l => notes.push({ row:r, lane:l })));
-  return { notes, stepMs: STEP_MS };
+  let t = 0;
+  let lane = Math.floor(rand() * LANES);
+  const nextLane = (jump) => {
+    const d = jump ? (rand() < .5 ? -2 : 2) : (rand() < .5 ? -1 : 1);
+    lane = (lane + d + LANES * 2) % LANES;
+    return lane;
+  };
+  const bars = song.bars;
+
+  for (let bar = 0; bar < bars; bar++) {
+    // Фраза выбирается случайно, но с весами под сложность трека
+    const r = rand();
+    let kind;
+    if (r < song.rest) kind = 'rest';
+    else if (r < song.rest + song.holds) kind = 'hold';
+    else if (r < song.rest + song.holds + song.chords) kind = 'chord';
+    else if (r < song.rest + song.holds + song.chords + song.fast) kind = 'burst';
+    else kind = 'straight';
+
+    if (kind === 'rest') {
+      // Дыхание: одна нота на такт и пауза — без неё всё звучит одинаково
+      notes.push({ lane: nextLane(true), t, hold: 0 });
+      t += beat * 2;
+    } else if (kind === 'hold') {
+      const len = beat * (rand() < .5 ? 2 : 3);
+      notes.push({ lane: nextLane(true), t, hold: len });
+      if (song.diff >= 3 && rand() < .5) {
+        // Вторая рука держит другую дорожку — настоящий FNF
+        notes.push({ lane: (lane + 2) % LANES, t: t + beat, hold: beat });
+      }
+      t += len + step;
+    } else if (kind === 'chord') {
+      const a = nextLane(false), b = (a + 1 + Math.floor(rand() * (LANES - 1))) % LANES;
+      notes.push({ lane: a, t, hold: 0 });
+      notes.push({ lane: b, t, hold: 0 });
+      t += beat;
+      notes.push({ lane: nextLane(false), t, hold: 0 });
+      t += beat;
+    } else if (kind === 'burst') {
+      const n = 4 + Math.floor(rand() * 4);
+      const s = step / 2;             // шестнадцатые
+      for (let i = 0; i < n; i++) { notes.push({ lane: nextLane(false), t, hold: 0 }); t += s; }
+      t += step;
+    } else {
+      const n = 3 + Math.floor(rand() * 3);
+      for (let i = 0; i < n; i++) {
+        // Синкопа: иногда пропускаем долю
+        if (rand() < song.synco) { t += step; i--; continue; }
+        notes.push({ lane: nextLane(rand() < .3), t, hold: 0 });
+        t += step;
+      }
+      t += step;
+    }
+  }
+  return notes.map(n => ({ ...n, t: n.t + LEAD_MS }));
 }
+
+// diff: 1..4 — влияет только на подпись и вес фраз
+const SONGS = [
+  { id:'bopeebo', name:'Bopeebo',   ico:'🎤', diff:1, bpm:100, bars:16, seed:1337,
+    rest:.22, holds:.22, chords:.10, fast:.04, synco:.10 },
+  { id:'fresh',   name:'Fresh',     ico:'🎸', diff:2, bpm:124, bars:18, seed:90210,
+    rest:.12, holds:.22, chords:.18, fast:.14, synco:.16 },
+  { id:'dadbat',  name:'Dad Battle',ico:'🔥', diff:3, bpm:150, bars:20, seed:666013,
+    rest:.06, holds:.20, chords:.22, fast:.26, synco:.22 },
+  { id:'chaos',   name:'Хаос',      ico:'🌀', diff:4, bpm:165, bars:20, seed:0,
+    rest:.05, holds:.18, chords:.24, fast:.32, synco:.26, random:true },
+];
+const DIFF_NAME = { 1:'легко', 2:'нормально', 3:'сложно', 4:'жесть' };
+
+// ---------- свой чарт из бота ----------
 function parseChart() {
-  // Формат из бота: #c=0.2,1.0,2.3  (строка.дорожка через запятую)
+  // Формат из бота: #c=0.2,1.0,2.3 (строка.дорожка). Опционально 0.2.4 — с удержанием.
   const raw = new URLSearchParams(location.hash.slice(1)).get('c');
-  if (!raw) return defaultChart();
-  const notes = raw.split(',').map(s => {
-    const [row, lane] = s.split('.').map(Number);
-    return { row, lane };
+  if (!raw) return null;
+  const step = Number(new URLSearchParams(location.hash.slice(1)).get('s')) || 500;
+  const parsed = raw.split(',').map(s => {
+    const [row, lane, len] = s.split('.').map(Number);
+    return { row, lane, len: len || 0 };
   }).filter(n => Number.isFinite(n.row) && n.lane >= 0 && n.lane < LANES);
-  return notes.length ? { notes, stepMs: STEP_MS } : defaultChart();
+  if (!parsed.length) return null;
+
+  // Подряд идущие ноты на одной дорожке склеиваем в удержание —
+  // так свой чарт тоже получает длинные ноты.
+  const byLane = {};
+  parsed.forEach(n => (byLane[n.lane] ||= []).push(n));
+  const notes = [];
+  for (const lane of Object.keys(byLane)) {
+    const list = byLane[lane].sort((a, b) => a.row - b.row);
+    let i = 0;
+    while (i < list.length) {
+      let j = i;
+      while (j + 1 < list.length && list[j + 1].row === list[j].row + 1) j++;
+      const runRows = j - i;
+      notes.push({
+        lane: Number(lane),
+        t: LEAD_MS + list[i].row * step,
+        hold: list[i].len ? list[i].len * step : (runRows >= 1 ? runRows * step : 0),
+      });
+      i = j + 1;
+    }
+  }
+  return notes.sort((a, b) => a.t - b.t);
 }
+const myChart = parseChart();
 
 // ---------- состояние ----------
-let notes = [], t0 = 0, running = false, raf = 0;
+let notes = [], t0 = 0, running = false, raf = 0, songName = '';
 let perfect = 0, good = 0, missed = 0, combo = 0, maxCombo = 0;
-let flash = [0,0,0,0];      // подсветка приёмника при нажатии
-let pops = [];              // всплывающие надписи
-const lanePress = [false,false,false,false];
+let holdsDone = 0, holdsBroken = 0, holdTotal = 0;
+let flash = [0, 0, 0, 0];
+let pops = [];
+const lanePress = [false, false, false, false];
+const holdActive = [null, null, null, null];
+const pointerLanes = new Map();     // pointerId -> дорожка (мультитач)
 
-function buildNotes() {
-  const chart = parseChart();
-  notes = chart.notes
-    .map(n => ({ ...n, t: LEAD_MS + n.row * chart.stepMs, hit:false, judged:false }))
-    .sort((a,b) => a.t - b.t);
-}
+function now() { return performance.now() - t0; }
 
-function start() {
-  buildNotes();
-  perfect = good = missed = combo = maxCombo = 0;
-  pops = [];
-  document.getElementById('startScreen').classList.add('hidden');
+function startSong(src, name) {
+  notes = src.map(n => ({ ...n, judged:false, done:false, holding:false }))
+             .sort((a, b) => a.t - b.t);
+  holdTotal = notes.filter(n => n.hold > 0).length;
+  songName = name;
+  perfect = good = missed = combo = maxCombo = holdsDone = holdsBroken = 0;
+  pops = []; lanePress.fill(false); holdActive.fill(null); pointerLanes.clear();
+  document.getElementById('menuScreen').classList.add('hidden');
   document.getElementById('endScreen').classList.add('hidden');
   running = true;
   t0 = performance.now();
@@ -129,22 +263,53 @@ function start() {
   loop();
 }
 
-function judge(lane) {
+let lastPlayed = null;   // () => startSong(...) для кнопки «Ещё раз»
+function playSong(song) {
+  const s = song.random ? { ...song, seed: (Math.random() * 1e9) | 0 } : song;
+  lastPlayed = () => playSong(song);          // «Хаос» каждый раз новый
+  startSong(generate(s), song.name);
+}
+function playMyChart() {
+  lastPlayed = playMyChart;
+  startSong(myChart, 'Мой чарт');
+}
+
+// ---------- судейство ----------
+function press(lane) {
   if (!running) return;
-  const now = performance.now() - t0;
+  const tn = now();
   flash[lane] = 1;
   let best = null, bestDiff = 1e9;
   for (const n of notes) {
     if (n.lane !== lane || n.judged) continue;
-    const d = Math.abs(n.t - now);
+    const d = Math.abs(n.t - tn);
     if (d < bestDiff) { bestDiff = d; best = n; }
   }
   if (!best || bestDiff > GOOD) { combo = 0; addPop(lane, 'мимо', '#ff6b8a'); return; }
-  best.judged = best.hit = true;
+  best.judged = true;
   if (bestDiff <= PERFECT) { perfect++; addPop(lane, 'ИДЕАЛЬНО', '#31ff6b'); }
   else { good++; addPop(lane, 'хорошо', '#ffe14d'); }
   combo++; maxCombo = Math.max(maxCombo, combo);
+  if (best.hold > 0) { best.holding = true; holdActive[lane] = best; }
+  else best.done = true;
   if (tg?.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+}
+
+function release(lane) {
+  const n = holdActive[lane];
+  if (!n) return;
+  holdActive[lane] = null;
+  n.holding = false; n.done = true;
+  if (now() >= n.t + n.hold - HOLD_TAIL_GRACE) completeHold(n, lane);
+  else { holdsBroken++; combo = 0; addPop(lane, 'сорвал', '#ff6b8a'); }
+}
+
+function completeHold(n, lane) {
+  n.holding = false; n.done = true;
+  holdActive[lane] = null;
+  holdsDone++; combo++; maxCombo = Math.max(maxCombo, combo);
+  addPop(lane, 'ДЕРЖАЛ!', '#22e0ff');
+  if (tg?.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
 }
 
 function addPop(lane, text, color) {
@@ -154,34 +319,43 @@ function addPop(lane, text, color) {
 // ---------- ввод ----------
 addEventListener('keydown', e => {
   if (e.repeat) return;
-  if (e.code === 'Space' && !running) { start(); return; }
   const lane = KEYS[e.code];
-  if (lane !== undefined) { lanePress[lane] = true; judge(lane); e.preventDefault(); }
+  if (lane !== undefined) { lanePress[lane] = true; press(lane); e.preventDefault(); }
 });
 addEventListener('keyup', e => {
   const lane = KEYS[e.code];
-  if (lane !== undefined) lanePress[lane] = false;
+  if (lane !== undefined) { lanePress[lane] = false; release(lane); e.preventDefault(); }
 });
-function pointerLane(x) {
+function laneAt(x) {
   const rel = (x - FIELD_X) / (FIELD_W / LANES);
   return Math.min(LANES - 1, Math.max(0, Math.floor(rel)));
 }
 cv.addEventListener('pointerdown', e => {
   if (!running) return;
-  const lane = pointerLane(e.clientX);
-  lanePress[lane] = true; judge(lane);
+  const lane = laneAt(e.clientX);
+  pointerLanes.set(e.pointerId, lane);
+  lanePress[lane] = true;
+  cv.setPointerCapture?.(e.pointerId);
+  press(lane);
 });
-cv.addEventListener('pointerup', e => { lanePress[pointerLane(e.clientX)] = false; });
-cv.addEventListener('pointercancel', () => lanePress.fill(false));
+function lift(e) {
+  const lane = pointerLanes.get(e.pointerId);
+  if (lane === undefined) return;
+  pointerLanes.delete(e.pointerId);
+  if (![...pointerLanes.values()].includes(lane)) lanePress[lane] = false;
+  release(lane);
+}
+cv.addEventListener('pointerup', lift);
+cv.addEventListener('pointercancel', lift);
 
 // ---------- отрисовка ----------
 function drawArrow(x, y, size, lane, alpha, filled) {
   ctx.save();
   ctx.translate(x, y);
   ctx.globalAlpha = alpha;
-  ctx.rotate(({0:Math.PI/2, 1:0, 2:Math.PI, 3:-Math.PI/2})[lane]);
+  ctx.rotate(({ 0:Math.PI/2, 1:0, 2:Math.PI, 3:-Math.PI/2 })[lane]);
   const s = size / 2;
-  ctx.beginPath();                 // стрелка вниз, поворачивается по дорожке
+  ctx.beginPath();
   ctx.moveTo(0, s);
   ctx.lineTo(s, 0);
   ctx.lineTo(s * .45, 0);
@@ -200,38 +374,49 @@ function drawArrow(x, y, size, lane, alpha, filled) {
   ctx.restore();
 }
 
+function drawTail(cx, top, bottom, lane, bright) {
+  const w = 26;
+  ctx.save();
+  ctx.globalAlpha = bright ? 1 : .85;
+  ctx.fillStyle = COLORS[lane];
+  if (bright) { ctx.shadowColor = COLORS[lane]; ctx.shadowBlur = 22; }
+  ctx.beginPath();
+  ctx.roundRect(cx - w / 2, top, w, Math.max(2, bottom - top), w / 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = bright ? .9 : .5;
+  ctx.lineWidth = 3; ctx.strokeStyle = '#0b0313'; ctx.stroke();
+  ctx.restore();
+}
+
 function loop() {
   raf = requestAnimationFrame(loop);
-  const now = performance.now() - t0;
+  const tn = now();
   const laneW = FIELD_W / LANES;
   const hitY = H - Math.max(110, H * 0.17);
   const size = Math.min(laneW * 0.62, 92);
+  const yOf = t => hitY - ((t - tn) / FALL_MS) * (hitY + size);
 
   // фон
   const g = ctx.createLinearGradient(0, 0, 0, H);
   g.addColorStop(0, '#2a0f47'); g.addColorStop(1, '#12071f');
   ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
 
-  // затемняем всё вне игрового поля, чтобы взгляд держался в колонке
   if (FIELD_X > 0) {
     ctx.fillStyle = 'rgba(0,0,0,.45)';
     ctx.fillRect(0, 0, FIELD_X, H);
     ctx.fillRect(FIELD_X + FIELD_W, 0, FIELD_X, H);
   }
-
-  // дорожки
   for (let l = 0; l < LANES; l++) {
     ctx.fillStyle = l % 2 ? 'rgba(255,255,255,.045)' : 'rgba(255,255,255,.02)';
     ctx.fillRect(FIELD_X + l * laneW, 0, laneW, H);
   }
-  // границы поля
   ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(FIELD_X, 0); ctx.lineTo(FIELD_X, H);
   ctx.moveTo(FIELD_X + FIELD_W, 0); ctx.lineTo(FIELD_X + FIELD_W, H);
   ctx.stroke();
 
-  // линия попадания
   ctx.save();
   ctx.strokeStyle = 'rgba(255,255,255,.22)'; ctx.lineWidth = 3;
   ctx.beginPath(); ctx.moveTo(FIELD_X, hitY); ctx.lineTo(FIELD_X + FIELD_W, hitY); ctx.stroke();
@@ -248,21 +433,32 @@ function loop() {
     flash[l] = Math.max(0, flash[l] - 0.08);
   }
 
-  // ноты — позиция вычисляется из времени, поэтому движение непрерывное
+  // ноты — позиция считается из времени, поэтому движение непрерывное
   for (const n of notes) {
-    if (n.hit) continue;
-    const dt = n.t - now;                 // мс до попадания
-    if (dt > FALL_MS || dt < -400) {
-      if (!n.judged && dt < -GOOD) { n.judged = true; missed++; combo = 0; }
+    if (n.done) continue;
+    const endT = n.t + n.hold;
+
+    // хвост дошёл до конца, а игрок всё ещё держит -> засчитываем
+    if (n.holding && tn >= endT - HOLD_TAIL_GRACE) { completeHold(n, n.lane); continue; }
+    // отпустил раньше и промолчал — ловится в release(); тут только промах головы
+    if (!n.judged && n.t - tn < -GOOD) {
+      n.judged = true; n.done = true; missed++; combo = 0;
+      if (n.hold > 0) holdsBroken++;
       continue;
     }
-    const y = hitY - (dt / FALL_MS) * (hitY + size);
+    if (n.t - tn > FALL_MS && !n.holding) continue;
+
     const cx = FIELD_X + n.lane * laneW + laneW / 2;
-    drawArrow(cx, y, size, n.lane, 1, true);
+    if (n.hold > 0) {
+      const top = Math.max(yOf(endT), -20);
+      const bottom = n.holding ? hitY : yOf(n.t);
+      if (bottom > top) drawTail(cx, top, bottom, n.lane, n.holding);
+    }
+    if (!n.judged) drawArrow(cx, yOf(n.t), size, n.lane, 1, true);
   }
 
   // всплывающие оценки
-  pops = pops.filter(p => now - (p.born - t0) < 700);
+  pops = pops.filter(p => performance.now() - p.born < 700);
   for (const p of pops) {
     const age = (performance.now() - p.born) / 700;
     ctx.save();
@@ -279,52 +475,84 @@ function loop() {
 
   // счёт и комбо
   ctx.save();
-  ctx.font = '900 20px "Trebuchet MS", sans-serif';
+  ctx.font = '900 19px "Trebuchet MS", sans-serif';
   ctx.textAlign = 'left'; ctx.fillStyle = '#fff';
   ctx.strokeStyle = '#0b0313'; ctx.lineWidth = 5;
-  const line = `✨ ${perfect}   ✅ ${good}   ❌ ${missed}`;
-  ctx.strokeText(line, FIELD_X + 12, 34); ctx.fillText(line, FIELD_X + 12, 34);
+  const line = `✨ ${perfect}   ✅ ${good}   ❌ ${missed}` + (holdTotal ? `   🔒 ${holdsDone}/${holdTotal}` : '');
+  ctx.strokeText(line, FIELD_X + 10, 32); ctx.fillText(line, FIELD_X + 10, 32);
   if (combo > 1) {
     ctx.textAlign = 'right';
     ctx.fillStyle = '#ffe14d';
-    ctx.strokeText(`COMBO ${combo}`, FIELD_X + FIELD_W - 12, 34);
-    ctx.fillText(`COMBO ${combo}`, FIELD_X + FIELD_W - 12, 34);
+    ctx.strokeText(`COMBO ${combo}`, FIELD_X + FIELD_W - 10, 32);
+    ctx.fillText(`COMBO ${combo}`, FIELD_X + FIELD_W - 10, 32);
   }
   ctx.restore();
 
-  // конец
-  const last = notes.length ? notes[notes.length - 1].t : 0;
-  if (running && now > last + 900) finish();
+  const last = notes.length ? Math.max(...notes.map(n => n.t + n.hold)) : 0;
+  if (running && tn > last + 900) finish();
 }
 
 function finish() {
   running = false;
   cancelAnimationFrame(raf);
-  const total = notes.length;
-  const acc = total ? Math.round(100 * (perfect + 0.5 * good) / total) : 0;
+  const total = notes.length + holdTotal;      // хвост считается отдельной целью
+  const acc = total ? Math.round(100 * (perfect + 0.5 * good + holdsDone) / total) : 0;
   const rank = acc >= 95 ? 'S' : acc >= 85 ? 'A' : acc >= 70 ? 'B' : acc >= 50 ? 'C' : 'D';
-  document.getElementById('rank').textContent = rank;
-  document.getElementById('rank').style.color =
-    ({S:'#31ff6b', A:'#22e0ff', B:'#ffe14d', C:'#ff9f43', D:'#ff6b8a'})[rank];
+  const rk = document.getElementById('rank');
+  rk.textContent = rank;
+  rk.style.color = ({ S:'#31ff6b', A:'#22e0ff', B:'#ffe14d', C:'#ff9f43', D:'#ff6b8a' })[rank];
   document.getElementById('stats').innerHTML =
-    `Точность: <b>${acc}%</b><br>✨ Идеально: ${perfect}<br>✅ Хорошо: ${good}<br>` +
-    `❌ Мимо: ${missed}<br>🔥 Макс. комбо: ${maxCombo}`;
+    `<b>${songName}</b><br>Точность: <b>${acc}%</b><br>` +
+    `✨ Идеально: ${perfect}<br>✅ Хорошо: ${good}<br>❌ Мимо: ${missed}<br>` +
+    (holdTotal ? `🔒 Удержания: ${holdsDone}/${holdTotal} (сорвано ${holdsBroken})<br>` : '') +
+    `🔥 Макс. комбо: ${maxCombo}`;
   document.getElementById('endScreen').classList.remove('hidden');
   if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
 }
 
-document.getElementById('startBtn').onclick = start;
-document.getElementById('againBtn').onclick = start;
-document.getElementById('backBtn').onclick = () => location.href = 'index.html';
-
-// подсказка под устройство
-if (matchMedia('(pointer: coarse)').matches) {
-  document.getElementById('startHint').innerHTML =
-    'Стрелки летят вниз к светящейся линии.<br>Тапай по своей дорожке в момент касания!';
+// ---------- меню выбора трека ----------
+function buildMenu() {
+  const box = document.getElementById('songs');
+  box.innerHTML = '';
+  if (myChart) {
+    const holds = myChart.filter(n => n.hold > 0).length;
+    box.appendChild(songCard('🎼', 'Мой чарт', 1,
+      `${myChart.length} нот` + (holds ? `, ${holds} с удержанием` : ''), playMyChart));
+  }
+  for (const s of SONGS) {
+    const sub = `${DIFF_NAME[s.diff]} • ${s.bpm} BPM` + (s.random ? ' • каждый раз новый' : '');
+    box.appendChild(songCard(s.ico, s.name, s.diff, sub, () => playSong(s)));
+  }
+}
+function songCard(ico, name, diff, sub, onclick) {
+  const el = document.createElement('button');
+  el.className = 'song';
+  el.dataset.diff = diff;
+  el.innerHTML = `<span class="ico">${ico}</span><span><span class="nm">${name}</span>` +
+                 `<span class="mt" style="display:block">${sub}</span></span>`;
+  el.onclick = onclick;
+  return el;
 }
 
+function showMenu() {
+  running = false;
+  document.getElementById('endScreen').classList.add('hidden');
+  document.getElementById('menuScreen').classList.remove('hidden');
+}
+
+document.getElementById('againBtn').onclick = () => lastPlayed?.();
+document.getElementById('menuBtn').onclick = showMenu;
+document.getElementById('backBtn').onclick = () => location.href = 'index.html';
+
+if (matchMedia('(pointer: coarse)').matches) {
+  document.getElementById('menuHint').innerHTML =
+    'Короткие стрелки — тапай в момент касания линии.<br>' +
+    '<b style="color:#ffe14d">Длинные</b> — прижми палец и <b style="color:#ffe14d">держи</b> до конца хвоста!';
+}
+
+buildMenu();
 resize();
-// статичный кадр до старта
+// статичный кадр под меню
 notes = []; t0 = performance.now(); loop(); running = false;
 </script>
 </body>

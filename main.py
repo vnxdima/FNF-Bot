@@ -36,14 +36,23 @@ WINDOW_ROWS = 15       # окно показа поля в редакторе
 WEBAPP_URL = os.getenv("WEBAPP_URL", "https://vnxdima.github.io/FNF-Bot/")
 
 
+ARCADE_STEP_MS = 500   # шаг строки чарта в Mini App (в редакторе строки короче)
+
+
 def chart_to_hash(chart: "Chart") -> str:
-    """Чарт -> компактный параметр для Mini App: #c=строка.дорожка,…"""
+    """Чарт -> компактный параметр для Mini App: #c=строка.дорожка,…&s=шаг_мс.
+
+    Подряд идущие ноты на одной дорожке Mini App склеит в длинную ноту
+    с удержанием — так свой чарт тоже получает hold-ноты.
+    """
     pairs = [
         f"{row}.{lane}"
         for row, lanes in sorted(chart.notes.items())
         for lane in sorted(lanes)
     ]
-    return "#c=" + ",".join(pairs) if pairs else ""
+    if not pairs:
+        return ""
+    return "#c=" + ",".join(pairs) + f"&s={ARCADE_STEP_MS}"
 
 # --- Параметры режима игры: (строка_мс, лид_мс, идеально_мс, хорошо_мс) ---
 # 📱 телефон: пальцы на всех кнопках; 🖥 комп: курсор надо доводить мышкой
