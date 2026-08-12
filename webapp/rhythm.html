@@ -9,13 +9,15 @@
   :root{ --ink:#0b0313; --lime:#31ff6b; --yellow:#ffe14d; --fuchsia:#ff3ea5; --cyan:#22e0ff }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent; user-select:none}
   html,body{margin:0; height:100%; overflow:hidden; background:#12071f;
-    font-family:"Trebuchet MS",system-ui,sans-serif; color:#fff; touch-action:none}
+    font-family:"Trebuchet MS",system-ui,sans-serif; color:#fff}
   #wrap{position:relative; width:100%; height:100%}
-  canvas{display:block; width:100%; height:100%}
+  /* Жесты глушим только на игровом поле — меню должно прокручиваться */
+  canvas{display:block; width:100%; height:100%; touch-action:none}
   .overlay{
     position:absolute; inset:0; display:flex; flex-direction:column; align-items:center;
-    justify-content:center; gap:14px; text-align:center; padding:20px 16px;
-    background:rgba(11,3,19,.9); backdrop-filter:blur(3px); z-index:2; overflow-y:auto;
+    justify-content:flex-start; gap:14px; text-align:center; padding:26px 16px 40px;
+    background:rgba(11,3,19,.9); backdrop-filter:blur(3px); z-index:2;
+    overflow-y:auto; -webkit-overflow-scrolling:touch; touch-action:pan-y;
   }
   .overlay.hidden{display:none}
   .title{font-size:clamp(26px,8vw,40px); font-weight:900; text-transform:uppercase;
@@ -66,12 +68,13 @@
 
   <div class="overlay" id="menuScreen">
     <p class="title">Лови ноты</p>
+    <p style="margin:0;font-size:13px;color:#c0a6e6;letter-spacing:.5px;text-transform:uppercase">👇 Выбери трек и нажми</p>
+    <div class="songs" id="songs"></div>
     <p class="hint" id="menuHint">
       Короткие стрелки — жми в момент касания линии.<br>
-      <b style="color:#ffe14d">Длинные</b> — жми и <b style="color:#ffe14d">держи</b> до конца хвоста!
+      <b style="color:#ffe14d">Длинные</b> — жми и <b style="color:#ffe14d">держи</b> до конца хвоста.<br>
+      <span style="opacity:.7">Клавиши A S W D или стрелки • на телефоне тапай и держи</span>
     </p>
-    <div class="songs" id="songs"></div>
-    <p class="hint" style="opacity:.7">Клавиши A S W D или стрелки • на телефоне тапай и держи</p>
   </div>
 
   <div class="overlay hidden" id="endScreen">
@@ -124,20 +127,21 @@ function beep(lane, holdMs = 0) {
 
   const gain = ac.createGain();
   const filt = ac.createBiquadFilter();
-  filt.type = 'lowpass'; filt.frequency.value = 1800; filt.Q.value = 1;
+  filt.type = 'lowpass'; filt.frequency.value = 3200; filt.Q.value = 0.7;
   gain.connect(ac.destination); filt.connect(gain);
 
-  const oscs = [['sawtooth', f], ['square', f * 1.005], ['sawtooth', f * 0.5]].map(([type, freq]) => {
+  // Мягкая связка: triangle (основа) + sine (теплота), без расстройки — меньше диссонанса
+  const oscs = [['triangle', f], ['sine', f * 0.5]].map(([type, freq]) => {
     const o = ac.createOscillator();
     o.type = type; o.frequency.setValueAtTime(freq, t);
-    // лёгкое глиссандо вниз в конце — «во-оп», как у вокала BF
-    o.frequency.exponentialRampToValueAtTime(freq * 0.92, t + dur);
+    // Более плавное глиссандо — вниз только на 3%, не 8%
+    o.frequency.exponentialRampToValueAtTime(freq * 0.97, t + dur);
     o.connect(filt); o.start(t);
     return o;
   });
 
   gain.gain.setValueAtTime(0.0001, t);
-  gain.gain.exponentialRampToValueAtTime(0.28, t + 0.015);
+  gain.gain.exponentialRampToValueAtTime(0.22, t + 0.02);  // мягче атака
   if (holdMs > 0) {
     gain.gain.setValueAtTime(0.22, t + 0.1);           // тон тянется, пока держишь
   } else {
